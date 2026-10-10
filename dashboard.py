@@ -345,7 +345,7 @@ rec_data = {
             "Allow easy opt-out — forced re-engagement can accelerate churn",
         ],
         "channel_note": "App engagement is lower on average in this segment. Prefer email or in-store for initial contact.",
-        "caution": "Absence of recent purchase may have many causes. Avoid assumptions. Pilot before scaling.",
+        "caution": "Segment C represents an opportunity to test re-engagement before customers become less active. The dataset does not contain acquisition-cost data, so the relative cost-effectiveness of re-engagement versus reacquisition cannot be determined.",
     },
 }
 
