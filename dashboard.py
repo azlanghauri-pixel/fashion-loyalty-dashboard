@@ -1,674 +1,494 @@
 """
 Fashion Retailer — Loyalty Campaign Dashboard
-Designed for the Marketing Director
+Decision-support tool only. Campaign recommendations require human review
+and pilot testing before implementation.
 """
-
 import pathlib
+import warnings
+warnings.filterwarnings("ignore")
+
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 
-# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Loyalty Campaign Dashboard",
     page_icon="👗",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
-# ── Brand colour palette ────────────────────────────────────────────────────────
-PALETTE = {
-    "primary":   "#1B2A4A",   # deep navy
-    "accent":    "#C8973A",   # warm gold
-    "highlight": "#E05C5C",   # coral
-    "muted":     "#7B8FA1",   # slate
-    "bg":        "#F7F4F0",   # off-white
-}
-
+# ── Colour palette ─────────────────────────────────────────────────────────────
 SEGMENT_COLOURS = {
-    "VIP Loyalists":       "#1B2A4A",
-    "Rising Stars":        "#C8973A",
-    "Price-Driven Buyers": "#E05C5C",
-    "Casual Browsers":     "#7B8FA1",
+    "Segment A — High-value active members":      "#1B2A4A",
+    "Segment B — High-value active non-members":  "#C8973A",
+    "Segment C — Members for re-engagement":      "#4A90A4",
+    "Not currently prioritised":                  "#C8C8C8",
 }
+preferred_order = [
+    "Segment A — High-value active members",
+    "Segment B — High-value active non-members",
+    "Segment C — Members for re-engagement",
+    "Not currently prioritised",
+]
 
-# ── Custom CSS ──────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-    /* Main background */
-    .main { background-color: #F7F4F0; }
-    section[data-testid="stSidebar"] { background-color: #1B2A4A; }
-    section[data-testid="stSidebar"] * { color: #F7F4F0 !important; }
-
-    /* KPI cards */
-    .kpi-card {
-        background: white;
-        border-radius: 12px;
-        padding: 20px 24px;
-        border-left: 5px solid #C8973A;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-        margin-bottom: 4px;
-    }
-    .kpi-label  { font-size: 13px; color: #7B8FA1; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
-    .kpi-value  { font-size: 32px; color: #1B2A4A; font-weight: 700; line-height: 1.2; }
-    .kpi-sub    { font-size: 13px; color: #7B8FA1; }
-
-    /* Section headings */
-    h2 { color: #1B2A4A !important; }
-    h3 { color: #1B2A4A !important; }
-
-    /* Segment badge */
-    .badge {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 700;
-        color: white;
-    }
-    .divider { border-top: 2px solid #E8E2DA; margin: 24px 0; }
-    .insight-box {
-        background: #EEF3F8;
-        border-left: 4px solid #1B2A4A;
-        padding: 14px 18px;
-        border-radius: 6px;
-        margin-top: 10px;
-        font-size: 14px;
-        color: #1B2A4A;
-    }
-    .recommendation-card {
-        background: white;
-        border-radius: 12px;
-        padding: 20px;
-        border-top: 4px solid #C8973A;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-        margin-bottom: 16px;
-    }
-    .rec-title { font-size: 16px; font-weight: 700; color: #1B2A4A; }
-    .rec-body  { font-size: 13px; color: #444; margin-top: 6px; line-height: 1.6; }
-</style>
-""", unsafe_allow_html=True)
-
-# ── Data loading & caching ──────────────────────────────────────────────────────
+# ── Load & segment ─────────────────────────────────────────────────────────────
 DATA_PATH = pathlib.Path(__file__).parent / "Fashion_Retailer_Customer_Data.xlsx"
 
 @st.cache_data
-def load_data():
+def load_and_segment():
     df = pd.read_excel(DATA_PATH)
+
+    median_spend = df["Total_Spend_12M_AUD"].median()       # expected: 1175
+    median_freq  = df["Purchase_Frequency_12M"].median()    # expected: 12
+
+    def assign_segment(row):
+        high_spend  = row["Total_Spend_12M_AUD"] >= median_spend
+        high_freq   = row["Purchase_Frequency_12M"] >= median_freq
+        recent      = row["Days_Since_Last_Purchase"] < 30
+        member      = row["Loyalty_Member"] == "Yes"
+
+        if member and high_spend and high_freq and recent:
+            return "Segment A — High-value active members"
+        elif (not member) and high_spend and high_freq and recent:
+            return "Segment B — High-value active non-members"
+        elif member and row["Days_Since_Last_Purchase"] >= 30:
+            return "Segment C — Members for re-engagement"
+        else:
+            return "Not currently prioritised"
+
+    df["Segment"] = df.apply(assign_segment, axis=1)
+    df["_median_spend"] = median_spend
+    df["_median_freq"]  = median_freq
     return df
 
-@st.cache_data
-def build_segments(df: pd.DataFrame):
-    """
-    K-Means clustering on four behavioural signals:
-      • Total 12-month spend
-      • Purchase frequency
-      • Average order value
-      • Days since last purchase (inverted — lower = better)
-    Returns df with a 'Segment' column.
-    """
-    features = ["Total_Spend_12M_AUD", "Purchase_Frequency_12M",
-                "Average_Order_Value_AUD", "Days_Since_Last_Purchase"]
-    X = df[features].copy()
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+df = load_and_segment()
+MEDIAN_SPEND = df["_median_spend"].iloc[0]
+MEDIAN_FREQ  = df["_median_freq"].iloc[0]
 
-    # Reproducible clustering with k=4
-    km = KMeans(n_clusters=4, random_state=42, n_init=20)
-    labels = km.fit_predict(X_scaled)
-    df = df.copy()
-    df["_cluster"] = labels
+# ── Prominent notice ───────────────────────────────────────────────────────────
+st.warning(
+    "⚠️ **Decision-support tool only.** "
+    "Campaign recommendations require human review and pilot testing before implementation."
+)
 
-    # Label clusters by their centroid spend + recency characteristics
-    centers = pd.DataFrame(
-        scaler.inverse_transform(km.cluster_centers_),
-        columns=features
-    )
-    centers["cluster"] = range(4)
+# ── Header ─────────────────────────────────────────────────────────────────────
+st.title("👗 Loyalty Campaign Dashboard")
+st.caption("Customer Segmentation & Campaign Recommendations · Marketing Director View")
+st.divider()
 
-    # Sort by spend desc, then recency asc to assign meaningful names
-    centers_sorted = centers.sort_values(
-        ["Total_Spend_12M_AUD", "Days_Since_Last_Purchase"],
-        ascending=[False, True]
-    ).reset_index(drop=True)
-
-    name_map_raw = {
-        0: "VIP Loyalists",
-        1: "Rising Stars",
-        2: "Price-Driven Buyers",
-        3: "Casual Browsers",
-    }
-    cluster_to_name = {}
-    for rank, row in centers_sorted.iterrows():
-        cluster_to_name[int(row["cluster"])] = name_map_raw[rank]
-
-    df["Segment"] = df["_cluster"].map(cluster_to_name)
-    df.drop(columns=["_cluster"], inplace=True)
-    return df
-
-# ── Load ────────────────────────────────────────────────────────────────────────
-raw_df = load_data()
-df = build_segments(raw_df)
-
-# ── Sidebar filters ─────────────────────────────────────────────────────────────
+# ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("👗 Filters")
-    st.caption("Refine the view using the options below.")
-
-    st.markdown("**Age Band**")
-    age_options = sorted(df["Age_Band"].unique())
-    sel_age = st.multiselect("", age_options, default=age_options, key="age",
-                              label_visibility="collapsed")
-
-    st.markdown("**Location**")
-    loc_options = sorted(df["Location_Type"].unique())
-    sel_loc = st.multiselect("", loc_options, default=loc_options, key="loc",
-                              label_visibility="collapsed")
-
-    st.markdown("**Preferred Channel**")
-    chan_options = sorted(df["Preferred_Channel"].unique())
-    sel_chan = st.multiselect("", chan_options, default=chan_options, key="chan",
-                               label_visibility="collapsed")
-
-    st.markdown("**Loyalty Status**")
-    loy_options = sorted(df["Loyalty_Member"].unique())
-    sel_loy = st.multiselect("", loy_options, default=loy_options, key="loy",
-                               label_visibility="collapsed")
-
+    sel_age  = st.multiselect("Age Band",  sorted(df["Age_Band"].unique()),
+                               default=sorted(df["Age_Band"].unique()))
+    sel_loc  = st.multiselect("Location",  sorted(df["Location_Type"].unique()),
+                               default=sorted(df["Location_Type"].unique()))
+    sel_chan = st.multiselect("Channel",   sorted(df["Preferred_Channel"].unique()),
+                               default=sorted(df["Preferred_Channel"].unique()))
+    sel_seg  = st.multiselect("Segment",   preferred_order, default=preferred_order)
     st.divider()
-    st.caption("Data: Fashion_Retailer_Customer_Data.xlsx · 60 customers")
+    st.caption("Data: 60 customers · 12-month window")
 
-# Apply filters
-mask = (
+fdf = df[
     df["Age_Band"].isin(sel_age) &
     df["Location_Type"].isin(sel_loc) &
     df["Preferred_Channel"].isin(sel_chan) &
-    df["Loyalty_Member"].isin(sel_loy)
-)
-fdf = df[mask].copy()
-
-# ── Header ──────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div style='background:#1B2A4A;padding:24px 32px;border-radius:14px;margin-bottom:24px;'>
-  <h1 style='color:#F7F4F0;margin:0;font-size:26px;'>👗 Loyalty Campaign Dashboard</h1>
-  <p style='color:#C8973A;margin:6px 0 0 0;font-size:15px;'>
-    Customer Segmentation & Campaign Recommendations &nbsp;·&nbsp; Marketing Director View
-  </p>
-</div>
-""", unsafe_allow_html=True)
+    df["Segment"].isin(sel_seg)
+].copy()
 
 if fdf.empty:
-    st.warning("No customers match the current filters. Please adjust the sidebar.")
+    st.warning("No customers match the current filters.")
     st.stop()
 
-# ── KPI Row ─────────────────────────────────────────────────────────────────────
-total_customers   = len(fdf)
-total_revenue     = fdf["Total_Spend_12M_AUD"].sum()
-avg_order_val     = fdf["Average_Order_Value_AUD"].mean()
-avg_purchase_freq = fdf["Purchase_Frequency_12M"].mean()
-loyalty_pct       = (fdf["Loyalty_Member"] == "Yes").mean() * 100
-avg_recency       = fdf["Days_Since_Last_Purchase"].mean()
-
+# ── KPIs — full dataset ────────────────────────────────────────────────────────
+prioritised = df[df["Segment"] != "Not currently prioritised"]
 c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-def kpi(col, label, value, sub=""):
-    col.markdown(f"""
-    <div class='kpi-card'>
-      <div class='kpi-label'>{label}</div>
-      <div class='kpi-value'>{value}</div>
-      <div class='kpi-sub'>{sub}</div>
-    </div>""", unsafe_allow_html=True)
-
-kpi(c1, "Customers",       f"{total_customers:,}",       "in filtered view")
-kpi(c2, "Total Revenue",   f"${total_revenue:,.0f}",      "12-month spend (AUD)")
-kpi(c3, "Avg Order Value", f"${avg_order_val:.0f}",       "per transaction")
-kpi(c4, "Avg Purchases",   f"{avg_purchase_freq:.1f}",    "per year")
-kpi(c5, "Loyalty Members", f"{loyalty_pct:.0f}%",         "of filtered customers")
-kpi(c6, "Avg Recency",     f"{avg_recency:.0f} days",     "since last purchase")
-
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+c1.metric("Total Customers",       f"{len(df):,}")
+c2.metric("Prioritised (A+B+C)",   f"{len(prioritised):,}")
+c3.metric("Combined Spend A+B+C",  f"${prioritised['Total_Spend_12M_AUD'].sum():,.0f}")
+c4.metric("Loyalty Members",       f"{(df['Loyalty_Member']=='Yes').sum()}")
+c5.metric("Median Annual Spend",   f"${MEDIAN_SPEND:,.0f}")
+c6.metric("Median Purchase Freq",  f"{MEDIAN_FREQ:.0f}/yr")
+st.divider()
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — CUSTOMER SEGMENTS
+# SECTION 1 — SEGMENTATION METHODOLOGY
 # ════════════════════════════════════════════════════════════════════════════════
-st.subheader("🎯 Customer Segments")
-st.caption("Four behavioural segments identified via K-Means clustering on spend, frequency, order value and recency.")
+with st.expander("📐 Segmentation Methodology", expanded=True):
+    st.markdown("""
+**Segments are assigned using deterministic, rule-based logic — no machine learning or probabilistic clustering.**
 
-seg_summary = fdf.groupby("Segment").agg(
-    Customers=("Customer_ID", "count"),
-    Avg_Spend=("Total_Spend_12M_AUD", "mean"),
-    Avg_Order=("Average_Order_Value_AUD", "mean"),
-    Avg_Freq=("Purchase_Frequency_12M", "mean"),
-    Avg_Recency=("Days_Since_Last_Purchase", "mean"),
-    Avg_App=("App_Engagement_Score", "mean"),
-    Discount_Pct=("Discount_Usage_Pct", "mean"),
-    Loyalty_Yes=("Loyalty_Member", lambda x: (x == "Yes").sum()),
+| Segment | Loyalty Member | Annual Spend | Purchase Frequency | Days Since Last Purchase |
+|---|---|---|---|---|
+| **A — High-value active members** | Yes | ≥ median (A$1,175) | ≥ median (12/yr) | < 30 days |
+| **B — High-value active non-members** | No | ≥ median (A$1,175) | ≥ median (12/yr) | < 30 days |
+| **C — Members for re-engagement** | Yes | Any | Any | ≥ 30 days |
+| **Not currently prioritised** | Any | Does not meet A/B/C | — | — |
+
+**Thresholds used in this dataset:**
+- Median annual spend: **A$1,175**
+- Median purchase frequency: **12 purchases/year**
+- Recency cutoff: **30 days**
+
+**Rules are applied in order** (A → B → C). A customer qualifying for Segment A will not also appear in C, even if they are a loyalty member.
+
+**What these segments mean for campaign targeting:**
+- **Segment A** already shows the behaviours the loyalty programme is designed to reward — high spend, frequent, recent, enrolled.
+- **Segment B** shows the same high-value active behaviour without programme membership — the clearest enrolment conversion opportunity.
+- **Segment C** are enrolled members who have not purchased recently — re-engagement before lapse is more cost-effective than reacquisition.
+""")
+
+# ── Segment summary cards ──────────────────────────────────────────────────────
+st.subheader("🎯 Segment Summary")
+
+seg_counts = df.groupby("Segment").agg(
+    Customers=("Customer_ID","count"),
+    Avg_Spend=("Total_Spend_12M_AUD","mean"),
+    Total_Spend=("Total_Spend_12M_AUD","sum"),
+    Avg_Order=("Average_Order_Value_AUD","mean"),
+    Avg_Freq=("Purchase_Frequency_12M","mean"),
+    Avg_Recency=("Days_Since_Last_Purchase","mean"),
+    Avg_App=("App_Engagement_Score","mean"),
+    Avg_Discount=("Discount_Usage_Pct","mean"),
 ).reset_index()
-seg_summary["Loyalty_%"] = (seg_summary["Loyalty_Yes"] / seg_summary["Customers"] * 100).round(0)
 
-# Segment tile cards
-seg_icons = {
-    "VIP Loyalists":       ("👑", "#1B2A4A"),
-    "Rising Stars":        ("⭐", "#C8973A"),
-    "Price-Driven Buyers": ("🏷️", "#E05C5C"),
-    "Casual Browsers":     ("🛍️", "#7B8FA1"),
-}
-seg_descs = {
-    "VIP Loyalists":
-        "High-spend, frequent, recent buyers. Already loyal — focus on exclusivity rewards and early access.",
-    "Rising Stars":
-        "Growing spend and frequency. Prime candidates for loyalty programme enrolment and personalised incentives.",
-    "Price-Driven Buyers":
-        "Moderate spend but heavy discount usage. Respond well to targeted promotions and bundle offers.",
-    "Casual Browsers":
-        "Low frequency and spend. Re-engagement campaigns, welcome-back vouchers and push notifications.",
+icons = {
+    "Segment A — High-value active members":     "👑",
+    "Segment B — High-value active non-members": "⭐",
+    "Segment C — Members for re-engagement":     "🔄",
+    "Not currently prioritised":                 "—",
 }
 
-preferred_order = ["VIP Loyalists", "Rising Stars", "Price-Driven Buyers", "Casual Browsers"]
-cols_seg = st.columns(4)
-for i, seg_name in enumerate(preferred_order):
-    row = seg_summary[seg_summary["Segment"] == seg_name]
-    if row.empty:
+display_segments = [s for s in preferred_order if s != "Not currently prioritised"]
+cols = st.columns(3)
+for i, name in enumerate(display_segments):
+    r = seg_counts[seg_counts["Segment"] == name]
+    if r.empty:
         continue
-    row = row.iloc[0]
-    icon, colour = seg_icons.get(seg_name, ("📌", "#888"))
-    cols_seg[i].markdown(f"""
-    <div style='background:white;border-radius:12px;padding:18px;
-                border-top:5px solid {colour};box-shadow:0 2px 8px rgba(0,0,0,0.07);
-                min-height:220px;'>
-      <div style='font-size:28px'>{icon}</div>
-      <div style='font-weight:700;font-size:15px;color:{colour};margin:6px 0 4px 0;'>{seg_name}</div>
-      <div style='font-size:22px;font-weight:700;color:#1B2A4A;'>{int(row['Customers'])} customers</div>
-      <hr style='border:0;border-top:1px solid #eee;margin:8px 0;'>
-      <div style='font-size:12px;color:#555;line-height:1.6;'>
-        💰 Avg Spend: <b>${row['Avg_Spend']:,.0f}</b><br>
-        🛒 Avg Order: <b>${row['Avg_Order']:,.0f}</b><br>
-        🔁 Freq/yr:   <b>{row['Avg_Freq']:.1f}</b><br>
-        📅 Recency:   <b>{row['Avg_Recency']:.0f} days</b>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    r = r.iloc[0]
+    with cols[i]:
+        st.markdown(f"### {icons.get(name,'')} {name.split('—')[1].strip()}")
+        st.metric("Customers",        int(r["Customers"]))
+        st.metric("Avg Annual Spend", f"${r['Avg_Spend']:,.0f}")
+        st.metric("Avg Order Value",  f"${r['Avg_Order']:,.0f}")
+        st.metric("Purchases/yr",     f"{r['Avg_Freq']:.1f}")
+        st.metric("Avg Recency",      f"{r['Avg_Recency']:.0f} days")
 
-st.markdown("<br>", unsafe_allow_html=True)
+not_pri = seg_counts[seg_counts["Segment"] == "Not currently prioritised"]
+if not not_pri.empty:
+    r = not_pri.iloc[0]
+    st.info(f"**Not currently prioritised:** {int(r['Customers'])} customers · "
+            f"Avg spend ${r['Avg_Spend']:,.0f} · Avg recency {r['Avg_Recency']:.0f} days")
 
-# ── Segment size + spend side-by-side ───────────────────────────────────────────
+st.divider()
+
+# ── Charts row 1 ──────────────────────────────────────────────────────────────
 col_a, col_b = st.columns(2)
 
 with col_a:
-    fig_pie = px.pie(
-        seg_summary, values="Customers", names="Segment",
-        title="Share of Customers by Segment",
-        color="Segment",
-        color_discrete_map=SEGMENT_COLOURS,
-        hole=0.45,
+    fig = px.pie(
+        seg_counts, values="Customers", names="Segment",
+        title="Customer Count by Segment",
+        color="Segment", color_discrete_map=SEGMENT_COLOURS, hole=0.4,
     )
-    fig_pie.update_traces(textposition="outside", textinfo="percent+label",
-                          textfont_size=12)
-    fig_pie.update_layout(
-        showlegend=False, margin=dict(t=50, b=10, l=10, r=10),
-        title_font_color="#1B2A4A",
-    )
-    st.plotly_chart(fig_pie, use_container_width=True)
+    fig.update_traces(textinfo="value+percent")
+    fig.update_layout(showlegend=True, legend_title_text="Segment")
+    st.plotly_chart(fig, use_container_width=True)
 
 with col_b:
-    seg_bar = seg_summary.copy()
-    seg_bar["Segment_ord"] = pd.Categorical(
-        seg_bar["Segment"], categories=preferred_order, ordered=True)
-    seg_bar = seg_bar.sort_values("Segment_ord")
-
-    fig_spend = px.bar(
-        seg_bar, x="Segment", y="Avg_Spend",
-        title="Average 12-Month Spend per Segment (AUD)",
-        color="Segment",
-        color_discrete_map=SEGMENT_COLOURS,
-        text=seg_bar["Avg_Spend"].apply(lambda v: f"${v:,.0f}"),
+    fig = px.bar(
+        seg_counts, x="Segment", y="Avg_Spend",
+        title="Average Annual Spend by Segment (AUD)",
+        color="Segment", color_discrete_map=SEGMENT_COLOURS,
+        text=seg_counts["Avg_Spend"].apply(lambda v: f"${v:,.0f}"),
+        category_orders={"Segment": preferred_order},
     )
-    fig_spend.update_traces(textposition="outside")
-    fig_spend.update_layout(
-        showlegend=False, yaxis_title="Avg Spend (AUD)", xaxis_title="",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    )
-    st.plotly_chart(fig_spend, use_container_width=True)
+    fig.update_traces(textposition="outside")
+    fig.update_layout(showlegend=False, yaxis_title="Avg Spend (AUD)", xaxis_title="",
+                      xaxis_tickangle=-15)
+    st.plotly_chart(fig, use_container_width=True)
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+# ── Charts row 2 ──────────────────────────────────────────────────────────────
+st.subheader("💰 Spending & Behaviour")
+col_c, col_d = st.columns(2)
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — SPENDING & BEHAVIOUR DEEP DIVE
-# ════════════════════════════════════════════════════════════════════════════════
-st.subheader("💰 Spending & Behaviour Deep Dive")
-
-col_left, col_right = st.columns(2)
-
-# Spend by Age Band
-with col_left:
-    age_order = ["18-24", "25-34", "35-49", "50-64", "65+"]
-    age_spend = fdf.groupby("Age_Band")["Total_Spend_12M_AUD"].mean().reindex(age_order).reset_index()
-    fig_age = px.bar(
-        age_spend, x="Age_Band", y="Total_Spend_12M_AUD",
+with col_c:
+    age_order = ["18-24","25-34","35-49","50-64","65+"]
+    age_df = fdf.groupby("Age_Band")["Total_Spend_12M_AUD"].mean().reindex(age_order).reset_index()
+    fig = px.bar(
+        age_df, x="Age_Band", y="Total_Spend_12M_AUD",
         title="Average Annual Spend by Age Band",
         color="Total_Spend_12M_AUD",
-        color_continuous_scale=[[0, "#E8E2DA"], [1, "#1B2A4A"]],
-        text=age_spend["Total_Spend_12M_AUD"].apply(lambda v: f"${v:,.0f}"),
+        color_continuous_scale=["#E8E2DA","#1B2A4A"],
+        text=age_df["Total_Spend_12M_AUD"].apply(lambda v: f"${v:,.0f}"),
     )
-    fig_age.update_traces(textposition="outside")
-    fig_age.update_layout(
-        coloraxis_showscale=False, showlegend=False,
-        yaxis_title="Avg Spend (AUD)", xaxis_title="Age Band",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    )
-    st.plotly_chart(fig_age, use_container_width=True)
+    fig.update_traces(textposition="outside")
+    fig.update_layout(coloraxis_showscale=False, yaxis_title="Avg Spend (AUD)",
+                      xaxis_title="Age Band")
+    st.plotly_chart(fig, use_container_width=True)
 
-# Channel breakdown
-with col_right:
-    chan_seg = fdf.groupby(["Preferred_Channel", "Segment"])["Customer_ID"].count().reset_index()
-    chan_seg.columns = ["Channel", "Segment", "Count"]
-    fig_chan = px.bar(
-        chan_seg, x="Channel", y="Count", color="Segment",
-        title="Customer Distribution: Channel × Segment",
-        color_discrete_map=SEGMENT_COLOURS,
-        barmode="stack",
-    )
-    fig_chan.update_layout(
-        yaxis_title="Customers", xaxis_title="Preferred Channel",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-        legend_title_text="Segment",
-    )
-    st.plotly_chart(fig_chan, use_container_width=True)
-
-# Spend distribution box
-col_c, col_d = st.columns(2)
-with col_c:
-    fig_box = px.box(
-        fdf, x="Segment", y="Total_Spend_12M_AUD",
-        title="Spend Distribution by Segment",
-        color="Segment", color_discrete_map=SEGMENT_COLOURS,
-        category_orders={"Segment": preferred_order},
-        points="all",
-    )
-    fig_box.update_layout(
-        showlegend=False, yaxis_title="Annual Spend (AUD)", xaxis_title="",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    )
-    st.plotly_chart(fig_box, use_container_width=True)
-
-# Recency vs Spend scatter
 with col_d:
-    fig_scatter = px.scatter(
+    fig = px.scatter(
         fdf,
-        x="Days_Since_Last_Purchase",
-        y="Total_Spend_12M_AUD",
-        color="Segment",
-        size="Purchase_Frequency_12M",
+        x="Days_Since_Last_Purchase", y="Total_Spend_12M_AUD",
+        color="Segment", size="Purchase_Frequency_12M",
         hover_name="Customer_ID",
-        hover_data=["Age_Band", "Preferred_Channel"],
-        title="Recency vs Spend (bubble = purchase frequency)",
+        hover_data=["Age_Band","Preferred_Channel","Loyalty_Member"],
+        title="Recency vs Annual Spend (bubble = purchase frequency)",
         color_discrete_map=SEGMENT_COLOURS,
         category_orders={"Segment": preferred_order},
     )
-    fig_scatter.update_layout(
+    fig.update_layout(
         xaxis_title="Days Since Last Purchase",
         yaxis_title="Annual Spend (AUD)",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
         legend_title_text="Segment",
     )
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-# ════════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — APP ENGAGEMENT & DISCOUNT BEHAVIOUR
-# ════════════════════════════════════════════════════════════════════════════════
-st.subheader("📱 App Engagement & Discount Sensitivity")
-
+# Spend distribution by segment
 col_e, col_f = st.columns(2)
 
 with col_e:
-    fig_app = px.violin(
-        fdf, x="Segment", y="App_Engagement_Score",
+    fig = px.box(
+        fdf, x="Segment", y="Total_Spend_12M_AUD",
         color="Segment", color_discrete_map=SEGMENT_COLOURS,
-        box=True, points="all",
-        title="App Engagement Score by Segment",
-        category_orders={"Segment": preferred_order},
+        title="Spend Distribution by Segment",
+        category_orders={"Segment": preferred_order}, points="all",
     )
-    fig_app.update_layout(
-        showlegend=False, yaxis_title="App Engagement (0–100)", xaxis_title="",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    )
-    st.plotly_chart(fig_app, use_container_width=True)
+    fig.update_layout(showlegend=False, yaxis_title="Annual Spend (AUD)",
+                      xaxis_title="", xaxis_tickangle=-15)
+    st.plotly_chart(fig, use_container_width=True)
 
 with col_f:
-    fig_disc = px.bar(
-        seg_summary.sort_values("Discount_Pct", ascending=False),
-        x="Segment", y="Discount_Pct",
-        color="Segment", color_discrete_map=SEGMENT_COLOURS,
-        text=seg_summary.sort_values("Discount_Pct", ascending=False)["Discount_Pct"].apply(lambda v: f"{v:.0f}%"),
-        title="Average Discount Usage % by Segment",
+    chan_seg = fdf.groupby(["Preferred_Channel","Segment"])["Customer_ID"].count().reset_index()
+    chan_seg.columns = ["Channel","Segment","Count"]
+    fig = px.bar(
+        chan_seg, x="Channel", y="Count", color="Segment",
+        title="Customer Count: Channel × Segment",
+        color_discrete_map=SEGMENT_COLOURS, barmode="stack",
+        category_orders={"Segment": preferred_order},
     )
-    fig_disc.update_traces(textposition="outside")
-    fig_disc.update_layout(
-        showlegend=False, yaxis_title="Avg Discount Usage (%)", xaxis_title="",
-        margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    )
-    st.plotly_chart(fig_disc, use_container_width=True)
+    fig.update_layout(yaxis_title="Customers", legend_title_text="Segment")
+    st.plotly_chart(fig, use_container_width=True)
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+st.divider()
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — PRODUCT PREFERENCES
-# ════════════════════════════════════════════════════════════════════════════════
+# ── Product preferences ────────────────────────────────────────────────────────
 st.subheader("👚 Product Preferences by Segment")
-
-prod_seg = fdf.groupby(["Segment", "Product_Preference"])["Customer_ID"].count().reset_index()
-prod_seg.columns = ["Segment", "Product", "Count"]
-
-fig_prod = px.bar(
-    prod_seg, x="Segment", y="Count", color="Product",
-    title="Product Category Preferences across Segments",
+prod = fdf.groupby(["Segment","Product_Preference"])["Customer_ID"].count().reset_index()
+prod.columns = ["Segment","Product","Count"]
+fig = px.bar(
+    prod, x="Segment", y="Count", color="Product",
+    title="Product Category Preferences by Segment",
     barmode="group",
     category_orders={"Segment": preferred_order},
     color_discrete_sequence=px.colors.qualitative.Set2,
 )
-fig_prod.update_layout(
-    yaxis_title="Customers", xaxis_title="",
-    margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    legend_title_text="Product",
-)
-st.plotly_chart(fig_prod, use_container_width=True)
+fig.update_layout(yaxis_title="Customers", xaxis_title="", xaxis_tickangle=-15)
+st.plotly_chart(fig, use_container_width=True)
 
-# Location heatmap
-loc_seg = fdf.groupby(["Location_Type", "Segment"])["Customer_ID"].count().unstack(fill_value=0)
-fig_heat = px.imshow(
-    loc_seg,
-    title="Customer Count: Location × Segment",
-    color_continuous_scale=[[0, "#F7F4F0"], [1, "#1B2A4A"]],
-    text_auto=True,
-    aspect="auto",
-)
-fig_heat.update_layout(
-    xaxis_title="Segment", yaxis_title="Location",
-    margin=dict(t=50, b=10), title_font_color="#1B2A4A",
-    coloraxis_showscale=False,
-)
-st.plotly_chart(fig_heat, use_container_width=True)
+st.divider()
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+# ── Discount usage ─────────────────────────────────────────────────────────────
+st.subheader("🏷️ Discount Usage by Segment")
+fig = px.box(
+    fdf, x="Segment", y="Discount_Usage_Pct",
+    color="Segment", color_discrete_map=SEGMENT_COLOURS,
+    title="Discount Usage % by Segment",
+    category_orders={"Segment": preferred_order}, points="all",
+)
+fig.update_layout(showlegend=False, yaxis_title="Discount Usage (%)",
+                  xaxis_title="", xaxis_tickangle=-15)
+st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — LOYALTY CAMPAIGN RECOMMENDATIONS
+# SECTION — CAMPAIGN RECOMMENDATIONS
 # ════════════════════════════════════════════════════════════════════════════════
-st.subheader("🚀 Loyalty Campaign Recommendations")
-st.caption("Tailored actions for each segment to maximise ROI on the upcoming campaign.")
+st.subheader("🚀 Campaign Recommendations")
+st.caption("Directional suggestions only. Each requires human review and pilot testing before implementation.")
 
 rec_data = {
-    "VIP Loyalists": {
+    "Segment A — High-value active members": {
         "icon": "👑",
-        "colour": "#1B2A4A",
-        "priority": "High — Protect & Elevate",
+        "label": "High-value active members",
         "tactics": [
-            "Exclusive Tier: Launch a 'Platinum' loyalty tier with early access to new collections.",
-            "Personal Shopping: Assign a dedicated style advisor or virtual concierge.",
-            "Birthday Moments: Premium gift-with-purchase, personalised packaging.",
-            "Referral Boost: Double loyalty points for every friend referred.",
+            "Recognise and reward existing loyalty status — personalised thank-you communications",
+            "Offer early access to new collections or exclusive member events",
+            "Invite to refer friends with a loyalty points incentive",
+            "Ensure communications match their preferred channel (in-store, online or mixed)",
         ],
-        "channel": "Email + App push (high engagement score) + in-store invitation events.",
-        "why": "These customers already spend the most and buy frequently. Small investments in exclusivity yield outsized retention and word-of-mouth value.",
+        "channel_note": "Channel preference varies — check individual preferred channel before outreach.",
+        "caution": "These customers are already engaged. Over-communication or irrelevant offers risk reducing satisfaction.",
     },
-    "Rising Stars": {
+    "Segment B — High-value active non-members": {
         "icon": "⭐",
-        "colour": "#C8973A",
-        "priority": "High — Accelerate Loyalty",
+        "label": "High-value active non-members",
         "tactics": [
-            "Fast-Track Enrolment: Offer double points for first 3 months of loyalty membership.",
-            "Milestone Rewards: Surprise unlocks at spend thresholds ($500, $1,000, $1,500).",
-            "Cross-Sell: Personalised 'complete the look' recommendations tied to past purchases.",
-            "App Incentive: Exclusive in-app flash sales to boost app engagement.",
+            "Present a clear, low-friction loyalty programme enrolment offer",
+            "Highlight concrete membership benefits relevant to their spend level",
+            "Avoid assuming a single reason for non-membership — test messaging across sub-groups",
         ],
-        "channel": "App push + targeted email + social retargeting.",
-        "why": "Spend and frequency are growing. These customers are on the cusp of VIP — a well-timed nudge converts them into long-term high-value buyers.",
+        "channel_note": "Channel preference varies — check individual preferred channel before outreach.",
+        "caution": "Non-membership may reflect a deliberate choice. Pilot test enrolment messaging before broad rollout.",
     },
-    "Price-Driven Buyers": {
-        "icon": "🏷️",
-        "colour": "#E05C5C",
-        "priority": "Medium — Shift Behaviour",
+    "Segment C — Members for re-engagement": {
+        "icon": "🔄",
+        "label": "Members for re-engagement",
         "tactics": [
-            "Smart Bundles: Bundle promotions that deliver perceived value without heavy discounting.",
-            "Points for Full-Price Buys: Extra loyalty points on non-discounted purchases.",
-            "Seasonal Previews: Give early access to sales — rewards loyalty, reduces dependency on public promotions.",
-            "Value Content: 'Style for less' editorial content that showcases quality over price.",
+            "Send a re-engagement communication acknowledging their loyalty membership",
+            "Highlight what is new since their last visit",
+            "Offer a time-limited incentive relevant to their product preference",
+            "Allow easy opt-out — forced re-engagement can accelerate churn",
         ],
-        "channel": "Email with strong subject lines + SMS for time-limited deals.",
-        "why": "Heavy discount usage compresses margins. The goal is to gradually shift this group towards value-based purchasing without alienating them.",
-    },
-    "Casual Browsers": {
-        "icon": "🛍️",
-        "colour": "#7B8FA1",
-        "priority": "Medium — Re-engage",
-        "tactics": [
-            "Win-Back Voucher: '$20 off your next purchase' triggered after 30 days of inactivity.",
-            "Trend Alerts: 'Just In' notifications aligned to their preferred product category.",
-            "Low-Barrier Loyalty: 'Earn points on your first purchase this month' — removes friction.",
-            "Social Proof: Show popular items and customer reviews to build purchase confidence.",
-        ],
-        "channel": "Email (low app engagement) + SMS for re-engagement offers.",
-        "why": "These customers haven't fully committed yet. Re-engagement is cost-effective — they know the brand. The focus is reducing friction and providing a reason to return.",
+        "channel_note": "App engagement is lower on average in this segment. Prefer email or in-store for initial contact.",
+        "caution": "Absence of recent purchase may have many causes. Avoid assumptions. Pilot before scaling.",
     },
 }
 
-for seg_name in preferred_order:
-    rec = rec_data[seg_name]
-    row = seg_summary[seg_summary["Segment"] == seg_name]
-    if row.empty:
+for name in display_segments:
+    rec = rec_data.get(name)
+    if not rec:
         continue
-    row = row.iloc[0]
-    st.markdown(f"""
-    <div class='recommendation-card'>
-      <div style='display:flex;align-items:center;gap:10px;'>
-        <span style='font-size:28px'>{rec['icon']}</span>
-        <div>
-          <div class='rec-title'>{seg_name}</div>
-          <span style='background:{rec['colour']};color:white;font-size:11px;
-                        font-weight:700;padding:2px 10px;border-radius:20px;'>
-            Priority: {rec['priority']}
-          </span>
-        </div>
-        <div style='margin-left:auto;text-align:right;'>
-          <div style='font-size:12px;color:#888;'>Avg Annual Spend</div>
-          <div style='font-size:20px;font-weight:700;color:{rec["colour"]};'>${row['Avg_Spend']:,.0f}</div>
-        </div>
-      </div>
-      <hr style='border:0;border-top:1px solid #eee;margin:12px 0;'>
-      <div class='rec-body'>
-        <b>Campaign Tactics:</b>
-        <ul style='margin:6px 0 10px 0;padding-left:18px;'>
-          {''.join(f"<li>{t}</li>" for t in rec['tactics'])}
-        </ul>
-        <b>Recommended Channel:</b> {rec['channel']}<br><br>
-        <b>Why this works:</b> {rec['why']}
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-# ════════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — RADAR CHART SEGMENT COMPARISON
-# ════════════════════════════════════════════════════════════════════════════════
-st.subheader("📊 Segment Comparison (Radar)")
-st.caption("Normalised scores across five dimensions — higher = better for marketing attractiveness.")
-
-radar_metrics = {
-    "Spend":     "Total_Spend_12M_AUD",
-    "Frequency": "Purchase_Frequency_12M",
-    "Recency":   "Days_Since_Last_Purchase",   # inverted
-    "App":       "App_Engagement_Score",
-    "Order Val": "Average_Order_Value_AUD",
-}
-
-seg_radar = fdf.groupby("Segment")[list(radar_metrics.values())].mean()
-# Invert recency (fewer days = better)
-seg_radar["Days_Since_Last_Purchase"] = seg_radar["Days_Since_Last_Purchase"].max() - seg_radar["Days_Since_Last_Purchase"]
-
-# Normalise 0-1
-for col in seg_radar.columns:
-    mn, mx = seg_radar[col].min(), seg_radar[col].max()
-    if mx > mn:
-        seg_radar[col] = (seg_radar[col] - mn) / (mx - mn)
-
-categories = list(radar_metrics.keys())
-
-fig_radar = go.Figure()
-for seg_name in preferred_order:
-    if seg_name not in seg_radar.index:
+    r = seg_counts[seg_counts["Segment"] == name]
+    if r.empty:
         continue
-    vals = [seg_radar.loc[seg_name, v] for v in radar_metrics.values()]
-    vals += [vals[0]]  # close the loop
-    fig_radar.add_trace(go.Scatterpolar(
-        r=vals,
-        theta=categories + [categories[0]],
-        fill="toself",
-        name=seg_name,
-        line_color=SEGMENT_COLOURS.get(seg_name, "#888"),
-        opacity=0.7,
-    ))
+    r = r.iloc[0]
+    with st.expander(
+        f"{rec['icon']} {rec['label']}  ·  {int(r['Customers'])} customers  ·  Avg spend A${r['Avg_Spend']:,.0f}",
+        expanded=True,
+    ):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown("**Suggested tactics:**")
+            for t in rec["tactics"]:
+                st.markdown(f"- {t}")
+            st.markdown(f"**Channel guidance:** {rec['channel_note']}")
+            st.info(f"⚠️ **Caution:** {rec['caution']}")
+        with col2:
+            st.metric("Customers",         int(r["Customers"]))
+            st.metric("Avg Annual Spend",  f"${r['Avg_Spend']:,.0f}")
+            st.metric("Total Spend",       f"${r['Total_Spend']:,.0f}")
+            st.metric("Avg Order Value",   f"${r['Avg_Order']:,.0f}")
+            st.metric("Avg Recency",       f"{r['Avg_Recency']:.0f} days")
 
-fig_radar.update_layout(
-    polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-    showlegend=True,
-    title="Segment Profiles — Normalised (0 = lowest, 1 = highest in each dimension)",
-    title_font_color="#1B2A4A",
-    margin=dict(t=60, b=20),
-    height=480,
-)
-st.plotly_chart(fig_radar, use_container_width=True)
+st.divider()
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — RAW DATA EXPLORER
+# SECTION — FAIRNESS & RELIABILITY AUDIT
 # ════════════════════════════════════════════════════════════════════════════════
-with st.expander("🗂️ View Customer Data Table", expanded=False):
-    display_df = fdf.drop(columns=["_cluster"] if "_cluster" in fdf.columns else [])
+with st.expander("⚖️ Fairness & Reliability Audit", expanded=False):
+
+    st.markdown("""
+### Fairness & Reliability Audit
+
+This section documents key checks to ensure the segmentation and recommendations do not
+introduce bias or unsupported inferences.
+""")
+
+    # In-store vs app engagement
+    st.markdown("#### 1. App Engagement vs In-Store Customer Value")
+    channel_app = df.groupby("Preferred_Channel").agg(
+        Avg_Spend=("Total_Spend_12M_AUD","mean"),
+        Avg_App=("App_Engagement_Score","mean"),
+        Count=("Customer_ID","count"),
+    ).reset_index()
+
+    fig = px.scatter(
+        channel_app, x="Avg_App", y="Avg_Spend",
+        text="Preferred_Channel", size="Count",
+        title="Average App Engagement vs Average Annual Spend by Channel",
+        labels={"Avg_App":"Avg App Engagement Score","Avg_Spend":"Avg Annual Spend (AUD)"},
+        color="Preferred_Channel",
+        color_discrete_sequence=["#1B2A4A","#C8973A","#4A90A4"],
+    )
+    fig.update_traces(textposition="top center")
+    fig.update_layout(showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("""
+**Finding:** In-store customers may have lower app engagement scores but comparable or higher
+annual spend. **Low app engagement must not be treated as low customer value.**
+
+- App engagement is used in this dashboard **only** to inform communication channel selection
+  (e.g. whether to use app push notifications vs email vs in-store invitation).
+- It is **not** used as a criterion for segment eligibility or campaign priority.
+""")
+
+    st.markdown("#### 2. Age is Not Used for Eligibility")
+    st.markdown("""
+- Age band is included in the dashboard for descriptive analysis only.
+- **Age is not a criterion in any segment rule.** No customer is excluded from or prioritised
+  for a campaign based on their age group.
+- Age-band charts show observed spending patterns to help tailor communication tone,
+  not to gate access to campaign benefits.
+""")
+
+    st.markdown("#### 3. App Engagement — Role Clarification")
+    st.markdown("""
+- App engagement score is available in this dataset but is **not used to determine segment membership**.
+- Its only sanctioned use is **communication channel guidance**: customers with high app engagement
+  may be more receptive to in-app messages; customers with low engagement should be reached
+  via email, SMS or in-store channels instead.
+""")
+
+    st.markdown("#### 4. Correlation ≠ Causation")
+    st.markdown("""
+- Observed associations in this dataset (e.g. between spend level and purchase frequency)
+  describe patterns in historical data only.
+- **No causal claims are made.** The dashboard does not assert that loyalty membership
+  *causes* higher spend, or that re-engagement campaigns *will* increase purchase frequency.
+- Any campaign outcomes should be measured through controlled pilots before being attributed
+  to specific interventions.
+""")
+
+st.divider()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SECTION — DATA LIMITATIONS
+# ════════════════════════════════════════════════════════════════════════════════
+with st.expander("⚠️ Data Limitations", expanded=False):
+    st.markdown("""
+### Data Limitations
+
+This dashboard is built on a single dataset of 60 customers covering a 12-month spend window.
+The following data are **absent from this dataset** and limit the conclusions that can be drawn:
+
+| Missing Data | Implication |
+|---|---|
+| **Campaign response history** | Cannot predict which customers will respond to which offer type |
+| **Profit margins by product** | High spend does not necessarily equal high profit; margin data is needed before allocating campaign budget |
+| **Campaign costs** | ROI cannot be calculated without cost data; "high-value" targeting cannot be confirmed as cost-effective |
+| **Customer acquisition costs** | Cannot assess whether re-engagement is cheaper than reacquisition without acquisition cost data |
+| **Communication consent / permissions** | Regulatory compliance (e.g. spam laws, privacy legislation) must be verified before any outreach |
+| **Longitudinal purchase history** | A single 12-month window is insufficient to establish behavioural trends or predict future spend with confidence |
+
+**Sample size note:** 60 customers is a small sample. Segment counts (particularly Segment B at 9 customers)
+are too small to draw statistically reliable conclusions. Findings should be treated as directional only.
+
+**Recommended next steps before implementation:**
+1. Obtain consent/permissions data before any outreach
+2. Validate segment rules against a larger or more recent dataset
+3. Run a small controlled pilot for each segment before broad rollout
+4. Measure actual campaign response rates and margin impact
+""")
+
+st.divider()
+
+# ── Data table ─────────────────────────────────────────────────────────────────
+with st.expander("🗂️ View Customer Data", expanded=False):
     seg_filter = st.multiselect(
-        "Filter by segment",
-        options=preferred_order,
-        default=preferred_order,
-        key="table_seg",
+        "Filter by segment", preferred_order, default=preferred_order, key="tbl"
     )
-    table_df = display_df[display_df["Segment"].isin(seg_filter)]
-    st.dataframe(
-        table_df.reset_index(drop=True),
-        use_container_width=True,
-        height=350,
-    )
-    st.caption(f"Showing {len(table_df)} customers")
+    show_df = fdf[fdf["Segment"].isin(seg_filter)].reset_index(drop=True)
+    st.dataframe(show_df.drop(columns=["_median_spend","_median_freq"]), use_container_width=True)
+    st.caption(f"Showing {len(show_df)} customers")
 
-# ── Footer ──────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div style='text-align:center;padding:20px;color:#7B8FA1;font-size:12px;margin-top:20px;'>
-  Fashion Retailer Loyalty Dashboard · Built with Streamlit & Plotly ·
-  Segmentation via K-Means clustering · Data: 60 customers, 12-month window
-</div>
-""", unsafe_allow_html=True)
+st.caption(
+    "Fashion Retailer Loyalty Dashboard · Streamlit & Plotly · "
+    "Rule-based segmentation · 60 customers · 12-month window · "
+    "Decision-support tool only — not for direct implementation without human review."
+)
