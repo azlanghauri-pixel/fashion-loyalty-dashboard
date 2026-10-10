@@ -322,7 +322,7 @@ rec_data = {
             "Ensure communications match their preferred channel (in-store, online or mixed)",
         ],
         "channel_note": "Channel preference varies — check individual preferred channel before outreach.",
-        "caution": "These customers are already engaged. Over-communication or irrelevant offers risk reducing satisfaction.",
+        "caution": "The dataset does not show how these customers respond to additional communications, so message frequency and offer relevance should be tested before wider rollout.",
     },
     "Segment B — High-value active non-members": {
         "icon": "⭐",
@@ -342,7 +342,7 @@ rec_data = {
             "Send a re-engagement communication acknowledging their loyalty membership",
             "Highlight what is new since their last visit",
             "Offer a time-limited incentive relevant to their product preference",
-            "Allow easy opt-out — forced re-engagement can accelerate churn",
+            "Provide a clear opt-out option and monitor customer responses during the pilot.",
         ],
         "channel_note": "App engagement is lower on average in this segment. Prefer email or in-store for initial contact.",
         "caution": "Segment C represents an opportunity to test re-engagement before customers become less active. The dataset does not contain acquisition-cost data, so the relative cost-effectiveness of re-engagement versus reacquisition cannot be determined.",
@@ -430,9 +430,7 @@ annual spend. **Low app engagement must not be treated as low customer value.**
     st.markdown("#### 3. App Engagement — Role Clarification")
     st.markdown("""
 - App engagement score is available in this dataset but is **not used to determine segment membership**.
-- Its only sanctioned use is **communication channel guidance**: customers with high app engagement
-  may be more receptive to in-app messages; customers with low engagement should be reached
-  via email, SMS or in-store channels instead.
+- Its only sanctioned use is **communication channel guidance**: App engagement can be used as an indicator of digital channel activity when selecting communication channels, but it does not establish that a customer will respond to an in-app message. Customers with lower app engagement should also have access to alternative channels such as email, SMS or in-store communication.
 """)
 
     st.markdown("#### 4. Correlation ≠ Causation")
