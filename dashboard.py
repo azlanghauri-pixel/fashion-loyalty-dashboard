@@ -137,7 +137,7 @@ with st.expander("📐 Segmentation Methodology", expanded=True):
 **What these segments mean for campaign targeting:**
 - **Segment A** already shows the behaviours the loyalty programme is designed to reward — high spend, frequent, recent, enrolled.
 - **Segment B** shows the same high-value active behaviour without programme membership — the clearest enrolment conversion opportunity.
-- **Segment C** are enrolled members who have not purchased recently — re-engagement before lapse is more cost-effective than reacquisition.
+- **Segment C** are enrolled members who have not purchased recently — contacting them before full lapse is a candidate intervention. The dataset does not contain acquisition-cost data, so no cost comparison with reacquisition can be made.
 """)
 
 # ── Segment summary cards ──────────────────────────────────────────────────────
@@ -462,7 +462,7 @@ The following data are **absent from this dataset** and limit the conclusions th
 | **Campaign response history** | Cannot predict which customers will respond to which offer type |
 | **Profit margins by product** | High spend does not necessarily equal high profit; margin data is needed before allocating campaign budget |
 | **Campaign costs** | ROI cannot be calculated without cost data; "high-value" targeting cannot be confirmed as cost-effective |
-| **Customer acquisition costs** | Cannot assess whether re-engagement is cheaper than reacquisition without acquisition cost data |
+| **Customer acquisition costs** | Cannot compare re-engagement against reacquisition cost without acquisition data |
 | **Communication consent / permissions** | Regulatory compliance (e.g. spam laws, privacy legislation) must be verified before any outreach |
 | **Longitudinal purchase history** | A single 12-month window is insufficient to establish behavioural trends or predict future spend with confidence |
 
