@@ -3,9 +3,6 @@ Fashion Retailer — Loyalty Campaign Dashboard
 Designed for the Marketing Director
 """
 
-import sys
-sys.path.insert(0, '/Users/azlanghauri/Library/Python/3.9/lib/python/site-packages')
-
 import pathlib
 import pandas as pd
 import numpy as np
