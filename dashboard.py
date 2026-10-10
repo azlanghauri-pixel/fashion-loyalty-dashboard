@@ -157,8 +157,7 @@ df = build_segments(raw_df)
 
 # ── Sidebar filters ─────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/fashion.png", width=60)
-    st.title("Filters")
+    st.title("👗 Filters")
     st.caption("Refine the view using the options below.")
 
     st.markdown("**Age Band**")
